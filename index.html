@@ -349,13 +349,7 @@ const storage = {
           if(k === NS+key) continue; // never wipe the record we're trying to save
           try{
             const rec = JSON.parse(localStorage.getItem(k));
-            let changed = false;
-            Object.keys(rec||{}).forEach(id=>{
-              if(rec[id] && (rec[id].inSelfie || rec[id].outSelfie || rec[id].breakStartSelfie || rec[id].breakEndSelfie)){
-                rec[id] = { ...rec[id], inSelfie:null, outSelfie:null, breakStartSelfie:null, breakEndSelfie:null };
-                changed = true;
-              }
-            });
+            const changed = stripSelfiesFromRecord(rec||{});
             if(changed){ localStorage.setItem(k, JSON.stringify(rec)); freed = true; }
           }catch(e){ /* skip unreadable record */ }
         }
@@ -837,9 +831,28 @@ function resizeImageFile(file, maxDim=SELFIE_MAX_DIM, quality=SELFIE_QUALITY){
 }
 
 // ---- Auto-expire old selfies ----
-// Keep only the latest selfie: remove inSelfie/outSelfie (base64 images) from
-// 'day:' records older than 30 days; the rest of the attendance data (in/out time, status) stays safe.
+// Keep only the latest selfie: remove ALL base64 selfie images (in/out duty,
+// break-start, and every break's end-selfie) from 'day:' records older than
+// SELFIE_RETENTION_DAYS; the rest of the attendance data (in/out time, status,
+// break start/end times) stays safe — only the photo bytes are wiped.
 const SELFIE_RETENTION_DAYS = 2;
+function stripSelfiesFromRecord(rec){
+  // Returns true if anything was actually cleared.
+  let changed = false;
+  Object.keys(rec).forEach(id=>{
+    const entry = rec[id];
+    if(!entry) return;
+    if(entry.inSelfie || entry.outSelfie || entry.breakStartSelfie){
+      rec[id] = { ...entry, inSelfie: null, outSelfie: null, breakStartSelfie: null };
+      changed = true;
+    }
+    if(Array.isArray(rec[id].breaks) && rec[id].breaks.some(b=>b && b.endSelfie)){
+      rec[id] = { ...rec[id], breaks: rec[id].breaks.map(b=> b && b.endSelfie ? { ...b, endSelfie: null } : b) };
+      changed = true;
+    }
+  });
+  return changed;
+}
 function pruneOldSelfies(){
   try{
     const cutoff = new Date();
@@ -850,14 +863,7 @@ function pruneOldSelfies(){
       if(dateStr >= cutoffStr) return; // recent, keep as-is
       let rec;
       try{ rec = JSON.parse(storage.get('day:'+dateStr).value); }catch(e){ return; }
-      let changed = false;
-      Object.keys(rec).forEach(id=>{
-        if(rec[id] && (rec[id].inSelfie || rec[id].outSelfie)){
-          rec[id] = { ...rec[id], inSelfie: null, outSelfie: null };
-          changed = true;
-        }
-      });
-      if(changed) storage.set('day:'+dateStr, JSON.stringify(rec));
+      if(stripSelfiesFromRecord(rec)) storage.set('day:'+dateStr, JSON.stringify(rec));
     });
   }catch(e){ /* fail silently, never block app boot */ }
 }
