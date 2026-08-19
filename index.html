@@ -830,6 +830,104 @@ function resizeImageFile(file, maxDim=SELFIE_MAX_DIM, quality=SELFIE_QUALITY){
   });
 }
 
+// ---- Live in-page camera ----
+// Root-cause fix for "snap le liya lekin ON/OFF DUTY save nahi hota, baar-baar
+// selfie maangta hai": the old flow used <input type=file capture> which
+// hands off to the phone's separate native Camera app. On many Android phones
+// (especially low-RAM ones) the browser tab gets frozen/killed by the OS while
+// that native app is open, wiping the in-memory `state` (and sometimes even
+// sessionStorage) before the user can tap "Mark ON DUTY" — so the captured
+// selfie silently vanishes and the app asks for it again, forever.
+// Capturing the photo live, inside the page itself (getUserMedia + canvas),
+// means the tab never loses focus and is never backgrounded, so it can't be
+// killed mid-capture. Falls back to the old native-camera-app file input on
+// any device/browser that doesn't support getUserMedia.
+let liveCamStream = null;
+function supportsLiveCamera(){
+  return !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia);
+}
+async function startLiveCam(videoEl){
+  stopLiveCam();
+  const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
+  liveCamStream = stream;
+  videoEl.srcObject = stream;
+  await videoEl.play().catch(()=>{});
+  return stream;
+}
+function stopLiveCam(){
+  if(liveCamStream){ liveCamStream.getTracks().forEach(t=>t.stop()); liveCamStream = null; }
+}
+function captureLiveCamFrame(videoEl, maxDim=SELFIE_MAX_DIM, quality=SELFIE_QUALITY){
+  const vw = videoEl.videoWidth || maxDim, vh = videoEl.videoHeight || maxDim;
+  let w = vw, h = vh;
+  if(w > h){ if(w > maxDim){ h = Math.round(h * maxDim / w); w = maxDim; } }
+  else { if(h > maxDim){ w = Math.round(w * maxDim / h); h = maxDim; } }
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.translate(w, 0); ctx.scale(-1, 1); // mirror, matches the on-screen preview
+  ctx.drawImage(videoEl, 0, 0, w, h);
+  return canvas.toDataURL('image/jpeg', quality);
+}
+// Wires one selfie capture widget (live camera with native-camera-app
+// fallback). getPending/setPending read & write the right `state.pending*`
+// slot so the rest of the app (Mark ON/OFF DUTY, Confirm Break, etc.) keeps
+// working exactly as before once a selfie is captured.
+function wireSelfieCam({ videoEl, previewImg, placeholderEl, actionBtn, fileInput, getPending, setPending, onCaptured }){
+  if(!actionBtn) return;
+  let mode = 'idle';
+  const existing = getPending();
+  if(existing){
+    previewImg.src = existing; previewImg.style.display = 'block';
+    placeholderEl.style.display = 'none';
+    mode = 'captured'; actionBtn.textContent = '🔄 Retake Selfie';
+  }
+  const finishCapture = (dataUrl)=>{
+    setPending(dataUrl);
+    previewImg.src = dataUrl; previewImg.style.display = 'block';
+    if(videoEl){ videoEl.style.display = 'none'; }
+    placeholderEl.style.display = 'none';
+    mode = 'captured'; actionBtn.textContent = '🔄 Retake Selfie';
+    toast('📸 Selfie Photo Captured!');
+    if(onCaptured) onCaptured(dataUrl);
+  };
+  if(fileInput) fileInput.onchange = async (e)=>{
+    const file = e.target.files[0];
+    if(!file) return;
+    placeholderEl.textContent = 'Compressing selfie...';
+    try{ finishCapture(await resizeImageFile(file)); }
+    catch(err){ placeholderEl.textContent = 'Press the button below to take a selfie'; toast('⚠️ Selfie process failed, please try again'); }
+  };
+  actionBtn.onclick = async ()=>{
+    if(mode === 'idle'){
+      if(videoEl && supportsLiveCamera()){
+        try{
+          placeholderEl.textContent = 'Starting camera...';
+          await startLiveCam(videoEl);
+          placeholderEl.style.display = 'none'; previewImg.style.display = 'none';
+          videoEl.style.display = 'block';
+          mode = 'live'; actionBtn.textContent = '📸 Capture';
+        }catch(err){
+          placeholderEl.textContent = 'Press the button below to take a selfie';
+          if(fileInput) fileInput.click();
+        }
+      } else if(fileInput){
+        fileInput.click();
+      }
+    } else if(mode === 'live'){
+      const dataUrl = captureLiveCamFrame(videoEl);
+      stopLiveCam();
+      finishCapture(dataUrl);
+    } else if(mode === 'captured'){
+      setPending(null);
+      previewImg.style.display = 'none';
+      placeholderEl.style.display = 'block';
+      placeholderEl.textContent = 'Press the button below to take a selfie';
+      mode = 'idle'; actionBtn.textContent = '📸 Tap to Capture Selfie';
+    }
+  };
+}
+
 // ---- Auto-expire old selfies ----
 // Keep only the latest selfie: remove ALL base64 selfie images (in/out duty,
 // break-start, and every break's end-selfie) from 'day:' records older than
@@ -871,6 +969,7 @@ function pruneOldSelfies(){
 function render(){
   stopCamera();
   stopBreakCamera();
+  stopLiveCam();
   if(!state.date) state.date = todayStr();
   const staff = getStaff();
   renderCloudStrip();
@@ -961,12 +1060,11 @@ function rUserPortal(app, rawStaff){
       <div class="cam-box" id="breakEndCamContainer">
         <div class="cam-corner tl"></div><div class="cam-corner tr"></div><div class="cam-corner bl"></div><div class="cam-corner br"></div>
         <div class="cam-placeholder" id="breakEndCamPlaceholder">Press the button below to take a selfie</div>
+        <video id="breakEndCamVideo" autoplay muted playsinline style="display:none;width:100%;height:100%;object-fit:cover;transform:scaleX(-1);border-radius:inherit;"></video>
         <img id="breakEndPreviewImg" style="display:none;" />
       </div>
-      <label class="cam-btn-label">
-        📸 Tap to Capture Selfie
-        <input type="file" id="breakEndCamInput" accept="image/*" capture="user" />
-      </label>
+      <button type="button" class="btn btn-line" id="breakEndCamActionBtn" style="width:100%;margin-bottom:8px;">📸 Tap to Capture Selfie</button>
+      <input type="file" id="breakEndCamInput" accept="image/*" capture="user" style="display:none;" />
       <div class="row2" style="margin-top:10px;">
         <button class="btn btn-line" id="cancelEndBreakBtn">✕ Cancel</button>
         <button class="btn btn-red" id="confirmEndBreakBtn" style="background:var(--red-2);color:#fff;border:none;">🔴 Confirm End Break</button>
@@ -980,12 +1078,11 @@ function rUserPortal(app, rawStaff){
       <div class="cam-box" id="breakStartCamContainer">
         <div class="cam-corner tl"></div><div class="cam-corner tr"></div><div class="cam-corner bl"></div><div class="cam-corner br"></div>
         <div class="cam-placeholder" id="breakStartCamPlaceholder">Press the button below to take a selfie</div>
+        <video id="breakStartCamVideo" autoplay muted playsinline style="display:none;width:100%;height:100%;object-fit:cover;transform:scaleX(-1);border-radius:inherit;"></video>
         <img id="breakStartPreviewImg" style="display:none;" />
       </div>
-      <label class="cam-btn-label">
-        📸 Tap to Capture Selfie
-        <input type="file" id="breakStartCamInput" accept="image/*" capture="user" />
-      </label>
+      <button type="button" class="btn btn-line" id="breakStartCamActionBtn" style="width:100%;margin-bottom:8px;">📸 Tap to Capture Selfie</button>
+      <input type="file" id="breakStartCamInput" accept="image/*" capture="user" style="display:none;" />
       <div class="row2" style="margin-top:10px;">
         <button class="btn btn-line" id="cancelBreakBtn">✕ Cancel</button>
         <button class="btn btn-terra" id="confirmBreakBtn">✅ Confirm &amp; Start Break</button>
@@ -1031,13 +1128,12 @@ function rUserPortal(app, rawStaff){
           <div class="cam-box" id="camContainer">
             <div class="cam-corner tl"></div><div class="cam-corner tr"></div><div class="cam-corner bl"></div><div class="cam-corner br"></div>
             <div class="cam-placeholder" id="camPlaceholder">Press the button below to take a selfie</div>
+            <video id="camVideo" autoplay muted playsinline style="display:none;width:100%;height:100%;object-fit:cover;transform:scaleX(-1);border-radius:inherit;"></video>
             <img id="previewImg" style="display:none;" />
           </div>
 
-          <label class="cam-btn-label">
-            📸 Tap to Capture Selfie
-            <input type="file" id="directCamInput" accept="image/*" capture="user" />
-          </label>
+          <button type="button" class="btn btn-line" id="camActionBtn" style="margin-top:10px;width:100%;">📸 Tap to Capture Selfie</button>
+          <input type="file" id="directCamInput" accept="image/*" capture="user" style="display:none;" />
         </div>
 
         <div class="row2" style="margin-top:14px;">
@@ -1087,15 +1183,14 @@ function rUserPortal(app, rawStaff){
 
   const previewImg = app.querySelector('#previewImg');
   const camPlaceholder = app.querySelector('#camPlaceholder');
+  const camVideo = app.querySelector('#camVideo');
+  const camActionBtn = app.querySelector('#camActionBtn');
   const directCamInput = app.querySelector('#directCamInput');
 
-  // Mobile browsers (esp. Android/WebView) sometimes suspend or reload the
-  // page while the native camera app is open/closing for a file input
-  // capture. That wipes the in-memory `state` object, so a selfie that was
-  // just captured could vanish before the user taps "Mark ON/OFF DUTY",
-  // making the button silently fail and re-open the camera. To survive
-  // that, every captured selfie is also mirrored into sessionStorage (keyed
-  // per staff) and restored here on every render, not just from `state`.
+  // Every captured selfie is also mirrored into sessionStorage (keyed per
+  // staff) so it survives a background re-render — e.g. cloud sync from
+  // another device, or (on devices without live-camera support, using the
+  // native-camera-app fallback) the OS backgrounding the tab.
   const PENDING_KEY = 'airman-pending-selfie:' + selectedStaff.id;
   if(!state.pendingSelfie){
     try{
@@ -1104,43 +1199,24 @@ function rUserPortal(app, rawStaff){
     }catch(e){ /* sessionStorage unavailable — fall back to in-memory only */ }
   }
 
-  // Restore an in-progress capture if a background re-render (e.g. cloud sync
-  // triggered by another staff member's device, or the page reloading after
-  // the camera app closes) rebuilt this screen before the user tapped
-  // "Mark ON/OFF DUTY". Keeps the preview/avatar in sync with the data
-  // actually held in state.pendingSelfie.
-  if(state.pendingSelfie){
-    previewImg.src = state.pendingSelfie;
-    previewImg.style.display = 'block';
-    camPlaceholder.style.display = 'none';
-    const avatarRestore = app.querySelector(hasIn ? '#avatarCircleOut' : '#avatarCircleIn');
-    if(avatarRestore) avatarRestore.innerHTML = `<img src="${state.pendingSelfie}">`;
-  }
-
-  directCamInput.onchange = async (e)=>{
-    const file = e.target.files[0];
-    if(!file) return;
-    camPlaceholder.textContent = 'Compressing selfie...';
-    try{
-      state.pendingSelfie = await resizeImageFile(file);
-      try{ sessionStorage.setItem(PENDING_KEY, state.pendingSelfie); }catch(e){ /* storage full/unavailable — in-memory still works */ }
-      previewImg.src = state.pendingSelfie;
-      previewImg.style.display = 'block';
-      camPlaceholder.style.display = 'none';
+  wireSelfieCam({
+    videoEl: camVideo, previewImg, placeholderEl: camPlaceholder, actionBtn: camActionBtn, fileInput: directCamInput,
+    getPending: ()=>state.pendingSelfie,
+    setPending: (v)=>{
+      state.pendingSelfie = v;
+      try{ if(v) sessionStorage.setItem(PENDING_KEY, v); else sessionStorage.removeItem(PENDING_KEY); }catch(e){}
+    },
+    onCaptured: (dataUrl)=>{
       const avatarCircle = app.querySelector(hasIn ? '#avatarCircleOut' : '#avatarCircleIn');
-      if(avatarCircle) avatarCircle.innerHTML = `<img src="${state.pendingSelfie}">`;
-      toast('📸 Selfie Photo Captured!');
-    }catch(err){
-      camPlaceholder.textContent = 'Press the button below to take a selfie';
-      toast('⚠️ Selfie process failed, please try again');
+      if(avatarCircle) avatarCircle.innerHTML = `<img src="${dataUrl}">`;
     }
-  };
+  });
 
   const markOnDutyBtn = app.querySelector('#markOnDutyBtn');
   if(markOnDutyBtn) markOnDutyBtn.onclick = ()=>{
     if(!state.pendingSelfie){
       toast('⚠️ Please tap "Take Live Selfie Photo" first!');
-      directCamInput.click();
+      camActionBtn.click();
       return;
     }
     const curTime = nowTime24();
@@ -1173,7 +1249,7 @@ function rUserPortal(app, rawStaff){
 
     if(!state.pendingSelfie){
       toast('⚠️ Please tap "Take Live Selfie Photo" first!');
-      directCamInput.click();
+      camActionBtn.click();
       return;
     }
 
@@ -1210,35 +1286,22 @@ function rUserPortal(app, rawStaff){
 
   const breakStartPreviewImg = app.querySelector('#breakStartPreviewImg');
   const breakStartCamPlaceholder = app.querySelector('#breakStartCamPlaceholder');
+  const breakStartCamVideo = app.querySelector('#breakStartCamVideo');
+  const breakStartCamActionBtn = app.querySelector('#breakStartCamActionBtn');
   const breakStartCamInput = app.querySelector('#breakStartCamInput');
 
-  if(state.pendingBreakStartSelfie && breakStartPreviewImg){
-    breakStartPreviewImg.src = state.pendingBreakStartSelfie;
-    breakStartPreviewImg.style.display = 'block';
-    breakStartCamPlaceholder.style.display = 'none';
-  }
-
-  if(breakStartCamInput) breakStartCamInput.onchange = async (e)=>{
-    const file = e.target.files[0];
-    if(!file) return;
-    breakStartCamPlaceholder.textContent = 'Compressing selfie...';
-    try{
-      state.pendingBreakStartSelfie = await resizeImageFile(file);
-      breakStartPreviewImg.src = state.pendingBreakStartSelfie;
-      breakStartPreviewImg.style.display = 'block';
-      breakStartCamPlaceholder.style.display = 'none';
-      toast('📸 Selfie Photo Captured!');
-    }catch(err){
-      breakStartCamPlaceholder.textContent = 'Press the button below to take a selfie';
-      toast('⚠️ Selfie process failed, please try again');
-    }
-  };
+  wireSelfieCam({
+    videoEl: breakStartCamVideo, previewImg: breakStartPreviewImg, placeholderEl: breakStartCamPlaceholder,
+    actionBtn: breakStartCamActionBtn, fileInput: breakStartCamInput,
+    getPending: ()=>state.pendingBreakStartSelfie,
+    setPending: (v)=>{ state.pendingBreakStartSelfie = v; }
+  });
 
   const confirmBreakBtn = app.querySelector('#confirmBreakBtn');
   if(confirmBreakBtn) confirmBreakBtn.onclick = ()=>{
     if(!state.pendingBreakStartSelfie){
       toast('⚠️ Pehle selfie capture karein — tabhi break start hoga!');
-      if(breakStartCamInput) breakStartCamInput.click();
+      if(breakStartCamActionBtn) breakStartCamActionBtn.click();
       return;
     }
     const dayData = getDay(todayStr());
@@ -1270,35 +1333,22 @@ function rUserPortal(app, rawStaff){
 
   const breakEndPreviewImg = app.querySelector('#breakEndPreviewImg');
   const breakEndCamPlaceholder = app.querySelector('#breakEndCamPlaceholder');
+  const breakEndCamVideo = app.querySelector('#breakEndCamVideo');
+  const breakEndCamActionBtn = app.querySelector('#breakEndCamActionBtn');
   const breakEndCamInput = app.querySelector('#breakEndCamInput');
 
-  if(state.pendingBreakEndSelfie && breakEndPreviewImg){
-    breakEndPreviewImg.src = state.pendingBreakEndSelfie;
-    breakEndPreviewImg.style.display = 'block';
-    breakEndCamPlaceholder.style.display = 'none';
-  }
-
-  if(breakEndCamInput) breakEndCamInput.onchange = async (e)=>{
-    const file = e.target.files[0];
-    if(!file) return;
-    breakEndCamPlaceholder.textContent = 'Compressing selfie...';
-    try{
-      state.pendingBreakEndSelfie = await resizeImageFile(file);
-      breakEndPreviewImg.src = state.pendingBreakEndSelfie;
-      breakEndPreviewImg.style.display = 'block';
-      breakEndCamPlaceholder.style.display = 'none';
-      toast('📸 Selfie Photo Captured!');
-    }catch(err){
-      breakEndCamPlaceholder.textContent = 'Press the button below to take a selfie';
-      toast('⚠️ Selfie process failed, please try again');
-    }
-  };
+  wireSelfieCam({
+    videoEl: breakEndCamVideo, previewImg: breakEndPreviewImg, placeholderEl: breakEndCamPlaceholder,
+    actionBtn: breakEndCamActionBtn, fileInput: breakEndCamInput,
+    getPending: ()=>state.pendingBreakEndSelfie,
+    setPending: (v)=>{ state.pendingBreakEndSelfie = v; }
+  });
 
   const confirmEndBreakBtn = app.querySelector('#confirmEndBreakBtn');
   if(confirmEndBreakBtn) confirmEndBreakBtn.onclick = ()=>{
     if(!state.pendingBreakEndSelfie){
       toast('⚠️ Pehle selfie capture karein!');
-      if(breakEndCamInput) breakEndCamInput.click();
+      if(breakEndCamActionBtn) breakEndCamActionBtn.click();
       return;
     }
     const dayData = getDay(todayStr());
