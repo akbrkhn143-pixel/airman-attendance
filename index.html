@@ -326,7 +326,50 @@ const STATUS_COLOR = {
 const NS = 'airman-register-v4:';
 const storage = {
   get(key){ const v = localStorage.getItem(NS+key); if(v===null) throw new Error('nf'); return {value:v}; },
-  set(key, value){ localStorage.setItem(NS+key, value); scheduleAutoSave(); scheduleCloudSync(); },
+  set(key, value){
+    try{
+      localStorage.setItem(NS+key, value);
+    }catch(err){
+      // Storage full (usually old selfie photos piling up) — auto-clean the
+      // oldest day records with photos still attached, then retry once.
+      // Without this, setItem throws silently and the caller's onclick
+      // handler (e.g. "Snap & Mark ON DUTY") stops mid-way: nothing gets
+      // saved, no error is shown, and the user is forced to re-capture the
+      // selfie again and again.
+      try{
+        const dayKeys = [];
+        for(let i=0;i<localStorage.length;i++){
+          const k = localStorage.key(i);
+          if(k && k.startsWith(NS+'day:')) dayKeys.push(k);
+        }
+        dayKeys.sort(); // oldest date string first
+        let freed = false;
+        for(const k of dayKeys.slice(0, 10)){
+          if(k === NS+key) continue; // never wipe the record we're trying to save
+          try{
+            const rec = JSON.parse(localStorage.getItem(k));
+            let changed = false;
+            Object.keys(rec||{}).forEach(id=>{
+              if(rec[id] && (rec[id].inSelfie || rec[id].outSelfie || rec[id].breakStartSelfie || rec[id].breakEndSelfie)){
+                rec[id] = { ...rec[id], inSelfie:null, outSelfie:null, breakStartSelfie:null, breakEndSelfie:null };
+                changed = true;
+              }
+            });
+            if(changed){ localStorage.setItem(k, JSON.stringify(rec)); freed = true; }
+          }catch(e){ /* skip unreadable record */ }
+        }
+        if(freed){
+          localStorage.setItem(NS+key, value); // retry after freeing space
+        }else{
+          throw err; // nothing could be freed — surface the real error
+        }
+      }catch(err2){
+        toast('⚠️ Storage full — pehle purani selfies clear karein (Admin → old records) ya browser data clear karein.');
+        throw err2;
+      }
+    }
+    scheduleAutoSave(); scheduleCloudSync();
+  },
   list(prefix){ const full=NS+(prefix||''); const keys=[]; for(let i=0;i<localStorage.length;i++){ const k=localStorage.key(i); if(k&&k.startsWith(full)) keys.push(k.slice(NS.length)); } return keys; }
 };
 
@@ -1081,7 +1124,15 @@ function rUserPortal(app, rawStaff){
     // Office Duty sirf selfie se hi mark hoti hai — Admin ka manual edit (bina selfie) ise block nahi karega.
     if(existing.inSelfie){ toast('✅ ON DUTY is already marked for today.'); render(); return; }
     dayData[selectedStaff.id] = { ...existing, status:'present', in:curTime, inSelfie: state.pendingSelfie };
-    saveDay(todayStr(), dayData);
+    try{
+      saveDay(todayStr(), dayData);
+    }catch(err){
+      // Save failed (e.g. storage still full even after auto-clean) — keep
+      // state.pendingSelfie intact so the user does NOT have to re-capture
+      // the selfie; they just tap the button again after freeing space.
+      toast('⚠️ Save fail ho gaya — dobara try karein ya Admin se storage clear karwayein.');
+      return;
+    }
     state.pendingSelfie = null;
     toast(`🟢 ON DUTY Marked at ${to12(curTime)}!`); render();
   };
@@ -1102,7 +1153,12 @@ function rUserPortal(app, rawStaff){
 
     const curTime = nowTime24();
     dayData[selectedStaff.id] = { ...existing, out:curTime, outSelfie: state.pendingSelfie };
-    saveDay(todayStr(), dayData);
+    try{
+      saveDay(todayStr(), dayData);
+    }catch(err){
+      toast('⚠️ Save fail ho gaya — dobara try karein ya Admin se storage clear karwayein.');
+      return;
+    }
     state.pendingSelfie = null;
     stopBreakCamera();
     toast(`🔴 OFF DUTY Marked at ${to12(curTime)}!`); render();
