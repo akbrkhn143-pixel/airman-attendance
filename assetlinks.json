@@ -1,0 +1,8 @@
+[{
+      "relation": ["delegate_permission/common.handle_all_urls"],
+      "target": {
+        "namespace": "android_app",
+        "package_name": "app.netlify.airmangroupstaffattendance.twa",
+        "sha256_cert_fingerprints": ["D9:BE:F1:F8:2F:4B:CB:BC:FF:04:60:91:E5:E2:95:98:7A:06:86:30:53:41:F5:8F:54:F3:AC:7B:9D:5B:5F:87"]
+      }
+    }]
