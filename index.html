@@ -9,12 +9,12 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="apple-mobile-web-app-title" content="Airman Group">
 <meta name="theme-color" content="#14213D">
-<link rel="manifest" href="/manifest.json">
+<link rel="manifest" href="./manifest.json">
 <link rel="preconnect" href="https://fonts.googleapis.com/">
 <link rel="preconnect" href="https://fonts.gstatic.com/" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/exceljs/4.4.0/exceljs.min.js"></script>
-<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="apple-touch-icon" href="./icon-192.png">
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
@@ -1063,13 +1063,14 @@ function rUserPortal(app, rawStaff){
   `;
 
   if(!selectedStaff) return;
-  app.querySelector('#userSelect').onchange = e=>{ state.userStaffId = e.target.value; state.breakPending = false; state.breakEndPending = false; state.pendingSelfie = null; state.pendingBreakStartSelfie = null; state.pendingBreakEndSelfie = null; render(); };
+  app.querySelector('#userSelect').onchange = e=>{ try{ sessionStorage.removeItem('airman-pending-selfie:' + state.userStaffId); }catch(err){} state.userStaffId = e.target.value; state.breakPending = false; state.breakEndPending = false; state.pendingSelfie = null; state.pendingBreakStartSelfie = null; state.pendingBreakEndSelfie = null; render(); };
   app.querySelector('#userDateSelect').onchange = e=>{
     const v = e.target.value;
     if(!v) return;
     state.userViewDate = (v > todayStr()) ? todayStr() : v;
     state.breakPending = false;
     state.breakEndPending = false;
+    try{ sessionStorage.removeItem('airman-pending-selfie:' + state.userStaffId); }catch(err){}
     state.pendingSelfie = null;
     state.pendingBreakStartSelfie = null;
     state.pendingBreakEndSelfie = null;
@@ -1082,10 +1083,26 @@ function rUserPortal(app, rawStaff){
   const camPlaceholder = app.querySelector('#camPlaceholder');
   const directCamInput = app.querySelector('#directCamInput');
 
+  // Mobile browsers (esp. Android/WebView) sometimes suspend or reload the
+  // page while the native camera app is open/closing for a file input
+  // capture. That wipes the in-memory `state` object, so a selfie that was
+  // just captured could vanish before the user taps "Mark ON/OFF DUTY",
+  // making the button silently fail and re-open the camera. To survive
+  // that, every captured selfie is also mirrored into sessionStorage (keyed
+  // per staff) and restored here on every render, not just from `state`.
+  const PENDING_KEY = 'airman-pending-selfie:' + selectedStaff.id;
+  if(!state.pendingSelfie){
+    try{
+      const saved = sessionStorage.getItem(PENDING_KEY);
+      if(saved) state.pendingSelfie = saved;
+    }catch(e){ /* sessionStorage unavailable — fall back to in-memory only */ }
+  }
+
   // Restore an in-progress capture if a background re-render (e.g. cloud sync
-  // triggered by another staff member's device) rebuilt this screen before the
-  // user tapped "Mark ON/OFF DUTY". Keeps the preview/avatar in sync with the
-  // data actually held in state.pendingSelfie.
+  // triggered by another staff member's device, or the page reloading after
+  // the camera app closes) rebuilt this screen before the user tapped
+  // "Mark ON/OFF DUTY". Keeps the preview/avatar in sync with the data
+  // actually held in state.pendingSelfie.
   if(state.pendingSelfie){
     previewImg.src = state.pendingSelfie;
     previewImg.style.display = 'block';
@@ -1100,6 +1117,7 @@ function rUserPortal(app, rawStaff){
     camPlaceholder.textContent = 'Compressing selfie...';
     try{
       state.pendingSelfie = await resizeImageFile(file);
+      try{ sessionStorage.setItem(PENDING_KEY, state.pendingSelfie); }catch(e){ /* storage full/unavailable — in-memory still works */ }
       previewImg.src = state.pendingSelfie;
       previewImg.style.display = 'block';
       camPlaceholder.style.display = 'none';
@@ -1135,6 +1153,7 @@ function rUserPortal(app, rawStaff){
       return;
     }
     state.pendingSelfie = null;
+    try{ sessionStorage.removeItem(PENDING_KEY); }catch(e){}
     toast(`🟢 ON DUTY Marked at ${to12(curTime)}!`); render();
   };
 
@@ -1161,6 +1180,7 @@ function rUserPortal(app, rawStaff){
       return;
     }
     state.pendingSelfie = null;
+    try{ sessionStorage.removeItem(PENDING_KEY); }catch(e){}
     stopBreakCamera();
     toast(`🔴 OFF DUTY Marked at ${to12(curTime)}!`); render();
   };
@@ -2085,7 +2105,7 @@ function rBackup(app){
 
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      navigator.serviceWorker.register('/sw.js').catch(() => {});
+      navigator.serviceWorker.register('./sw.js').catch(() => {});
     });
   }
 })();
