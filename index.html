@@ -250,6 +250,7 @@
       <h2>App Install Karna Zaroori Hai</h2>
       <p>Attendance register ko use karne ke liye pehle isse apne home screen par install karein. Yeh ek baar ka step hai.</p>
       <button class="ig-btn" id="igInstallBtn">📲 Install App</button>
+      <button class="ig-btn" id="igSkipBtn" style="background:#F1F5F9;color:#14213D;">🌐 Continue to Web Browser</button>
       <div class="ig-steps" id="igManualSteps"></div>
       <div class="ig-note" id="igStatusNote">Install button ka wait ho raha hai…</div>
     </div>
@@ -838,7 +839,7 @@ function resizeImageFile(file, maxDim=SELFIE_MAX_DIM, quality=SELFIE_QUALITY){
 // ---- Auto-expire old selfies ----
 // Keep only the latest selfie: remove inSelfie/outSelfie (base64 images) from
 // 'day:' records older than 30 days; the rest of the attendance data (in/out time, status) stays safe.
-const SELFIE_RETENTION_DAYS = 30;
+const SELFIE_RETENTION_DAYS = 2;
 function pruneOldSelfies(){
   try{
     const cutoff = new Date();
@@ -2015,6 +2016,7 @@ function rBackup(app){
 (function(){
   const gate = document.getElementById('installGate');
   const installBtn = document.getElementById('igInstallBtn');
+  const skipBtn = document.getElementById('igSkipBtn');
   const stepsBox = document.getElementById('igManualSteps');
   const statusNote = document.getElementById('igStatusNote');
   let deferredPrompt = null;
@@ -2028,6 +2030,10 @@ function rBackup(app){
     document.documentElement.classList.remove('install-locked');
     gate.classList.add('ig-hidden');
   }
+
+  // "Continue to Web Browser" — user chooses to skip install and use the
+  // app directly in the browser tab instead.
+  if(skipBtn) skipBtn.addEventListener('click', unlockApp);
 
   // Already installed / running from home screen -> no gate at all.
   if (isStandalone()) {
