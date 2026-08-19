@@ -830,6 +830,31 @@ function resizeImageFile(file, maxDim=SELFIE_MAX_DIM, quality=SELFIE_QUALITY){
   });
 }
 
+// ---- Pending-selfie persistence (survives a tab reload/kill) ----
+// A captured-but-not-yet-submitted selfie used to live only in JS memory
+// (state) plus a sessionStorage mirror. If Android kills/reloads the Chrome
+// tab mid-way — e.g. an incoming call, low memory, screen lock — sessionStorage
+// itself can be wiped along with it, and the selfie vanishes even though it
+// was already captured, forcing the user to redo it. localStorage survives a
+// full tab/process kill, so we persist there instead, with a timestamp so a
+// very old leftover capture is never silently reused.
+const PENDING_SELFIE_MAX_AGE_MS = 6*60*60*1000; // 6 hours
+function savePendingSelfie(key, dataUrl){
+  try{ localStorage.setItem(key, JSON.stringify({ img: dataUrl, ts: Date.now() })); }catch(e){}
+}
+function loadPendingSelfie(key){
+  try{
+    const raw = localStorage.getItem(key);
+    if(!raw) return null;
+    const obj = JSON.parse(raw);
+    if(!obj || !obj.img) return null;
+    if(Date.now() - (obj.ts||0) > PENDING_SELFIE_MAX_AGE_MS){ localStorage.removeItem(key); return null; }
+    return obj.img;
+  }catch(e){ return null; }
+}
+function clearPendingSelfie(key){ try{ localStorage.removeItem(key); }catch(e){} }
+
+
 // ---- Live in-page camera ----
 // Root-cause fix for "snap le liya lekin ON/OFF DUTY save nahi hota, baar-baar
 // selfie maangta hai": the old flow used <input type=file capture> which
@@ -873,17 +898,25 @@ function captureLiveCamFrame(videoEl, maxDim=SELFIE_MAX_DIM, quality=SELFIE_QUAL
 // fallback). getPending/setPending read & write the right `state.pending*`
 // slot so the rest of the app (Mark ON/OFF DUTY, Confirm Break, etc.) keeps
 // working exactly as before once a selfie is captured.
-function wireSelfieCam({ videoEl, previewImg, placeholderEl, actionBtn, fileInput, getPending, setPending, onCaptured }){
+function wireSelfieCam({ videoEl, previewImg, placeholderEl, actionBtn, fileInput, persistKey, getPending, setPending, onCaptured }){
   if(!actionBtn) return;
   let mode = 'idle';
-  const existing = getPending();
+  let existing = getPending();
+  if(!existing && persistKey){
+    existing = loadPendingSelfie(persistKey);
+    if(existing) setPending(existing);
+  }
   if(existing){
     previewImg.src = existing; previewImg.style.display = 'block';
     placeholderEl.style.display = 'none';
     mode = 'captured'; actionBtn.textContent = '🔄 Retake Selfie';
   }
+  const applyPending = (v)=>{
+    setPending(v);
+    if(persistKey){ if(v) savePendingSelfie(persistKey, v); else clearPendingSelfie(persistKey); }
+  };
   const finishCapture = (dataUrl)=>{
-    setPending(dataUrl);
+    applyPending(dataUrl);
     previewImg.src = dataUrl; previewImg.style.display = 'block';
     if(videoEl){ videoEl.style.display = 'none'; }
     placeholderEl.style.display = 'none';
@@ -919,7 +952,7 @@ function wireSelfieCam({ videoEl, previewImg, placeholderEl, actionBtn, fileInpu
       stopLiveCam();
       finishCapture(dataUrl);
     } else if(mode === 'captured'){
-      setPending(null);
+      applyPending(null);
       previewImg.style.display = 'none';
       placeholderEl.style.display = 'block';
       placeholderEl.textContent = 'Press the button below to take a selfie';
@@ -1165,14 +1198,19 @@ function rUserPortal(app, rawStaff){
   `;
 
   if(!selectedStaff) return;
-  app.querySelector('#userSelect').onchange = e=>{ try{ sessionStorage.removeItem('airman-pending-selfie:' + state.userStaffId); }catch(err){} state.userStaffId = e.target.value; state.breakPending = false; state.breakEndPending = false; state.pendingSelfie = null; state.pendingBreakStartSelfie = null; state.pendingBreakEndSelfie = null; render(); };
+  const clearAllPendingSelfies = (staffId)=>{
+    clearPendingSelfie('airman-pending-selfie:' + staffId);
+    clearPendingSelfie('airman-pending-breakstart:' + staffId);
+    clearPendingSelfie('airman-pending-breakend:' + staffId);
+  };
+  app.querySelector('#userSelect').onchange = e=>{ clearAllPendingSelfies(state.userStaffId); state.userStaffId = e.target.value; state.breakPending = false; state.breakEndPending = false; state.pendingSelfie = null; state.pendingBreakStartSelfie = null; state.pendingBreakEndSelfie = null; render(); };
   app.querySelector('#userDateSelect').onchange = e=>{
     const v = e.target.value;
     if(!v) return;
     state.userViewDate = (v > todayStr()) ? todayStr() : v;
     state.breakPending = false;
     state.breakEndPending = false;
-    try{ sessionStorage.removeItem('airman-pending-selfie:' + state.userStaffId); }catch(err){}
+    clearAllPendingSelfies(state.userStaffId);
     state.pendingSelfie = null;
     state.pendingBreakStartSelfie = null;
     state.pendingBreakEndSelfie = null;
@@ -1187,25 +1225,13 @@ function rUserPortal(app, rawStaff){
   const camActionBtn = app.querySelector('#camActionBtn');
   const directCamInput = app.querySelector('#directCamInput');
 
-  // Every captured selfie is also mirrored into sessionStorage (keyed per
-  // staff) so it survives a background re-render — e.g. cloud sync from
-  // another device, or (on devices without live-camera support, using the
-  // native-camera-app fallback) the OS backgrounding the tab.
   const PENDING_KEY = 'airman-pending-selfie:' + selectedStaff.id;
-  if(!state.pendingSelfie){
-    try{
-      const saved = sessionStorage.getItem(PENDING_KEY);
-      if(saved) state.pendingSelfie = saved;
-    }catch(e){ /* sessionStorage unavailable — fall back to in-memory only */ }
-  }
 
   wireSelfieCam({
     videoEl: camVideo, previewImg, placeholderEl: camPlaceholder, actionBtn: camActionBtn, fileInput: directCamInput,
+    persistKey: PENDING_KEY,
     getPending: ()=>state.pendingSelfie,
-    setPending: (v)=>{
-      state.pendingSelfie = v;
-      try{ if(v) sessionStorage.setItem(PENDING_KEY, v); else sessionStorage.removeItem(PENDING_KEY); }catch(e){}
-    },
+    setPending: (v)=>{ state.pendingSelfie = v; },
     onCaptured: (dataUrl)=>{
       const avatarCircle = app.querySelector(hasIn ? '#avatarCircleOut' : '#avatarCircleIn');
       if(avatarCircle) avatarCircle.innerHTML = `<img src="${dataUrl}">`;
@@ -1235,7 +1261,7 @@ function rUserPortal(app, rawStaff){
       return;
     }
     state.pendingSelfie = null;
-    try{ sessionStorage.removeItem(PENDING_KEY); }catch(e){}
+    clearPendingSelfie(PENDING_KEY);
     toast(`🟢 ON DUTY Marked at ${to12(curTime)}!`); render();
   };
 
@@ -1262,7 +1288,7 @@ function rUserPortal(app, rawStaff){
       return;
     }
     state.pendingSelfie = null;
-    try{ sessionStorage.removeItem(PENDING_KEY); }catch(e){}
+    clearPendingSelfie(PENDING_KEY);
     stopBreakCamera();
     toast(`🔴 OFF DUTY Marked at ${to12(curTime)}!`); render();
   };
@@ -1293,6 +1319,7 @@ function rUserPortal(app, rawStaff){
   wireSelfieCam({
     videoEl: breakStartCamVideo, previewImg: breakStartPreviewImg, placeholderEl: breakStartCamPlaceholder,
     actionBtn: breakStartCamActionBtn, fileInput: breakStartCamInput,
+    persistKey: 'airman-pending-breakstart:' + selectedStaff.id,
     getPending: ()=>state.pendingBreakStartSelfie,
     setPending: (v)=>{ state.pendingBreakStartSelfie = v; }
   });
@@ -1311,6 +1338,7 @@ function rUserPortal(app, rawStaff){
     dayData[selectedStaff.id] = { ...existing, breakStart: nowTime24(), breakStartSelfie: state.pendingBreakStartSelfie };
     saveDay(todayStr(), dayData);
     state.breakPending = false;
+    clearPendingSelfie('airman-pending-breakstart:' + selectedStaff.id);
     state.pendingBreakStartSelfie = null;
     toast('☕ Break Started');
     render();
@@ -1340,6 +1368,7 @@ function rUserPortal(app, rawStaff){
   wireSelfieCam({
     videoEl: breakEndCamVideo, previewImg: breakEndPreviewImg, placeholderEl: breakEndCamPlaceholder,
     actionBtn: breakEndCamActionBtn, fileInput: breakEndCamInput,
+    persistKey: 'airman-pending-breakend:' + selectedStaff.id,
     getPending: ()=>state.pendingBreakEndSelfie,
     setPending: (v)=>{ state.pendingBreakEndSelfie = v; }
   });
@@ -1359,6 +1388,7 @@ function rUserPortal(app, rawStaff){
     dayData[selectedStaff.id] = { ...existing, breaks, breakStart: null };
     saveDay(todayStr(), dayData);
     state.breakEndPending = false;
+    clearPendingSelfie('airman-pending-breakend:' + selectedStaff.id);
     state.pendingBreakEndSelfie = null;
     toast(`🔴 Break Ended — duty hours resumed at ${to12(curTime)}`);
     render();
