@@ -220,46 +220,122 @@ function initFirebaseIfNeeded(){
     fbApp = firebase.initializeApp(firebaseConfig);
     fbAuth = firebase.auth();
     fbDb = firebase.firestore();
-    fbAuth.getRedirectResult().then(res => {
-      if(res && res.user) toast(`✅ Signed in as ${res.user.email}`);
-    }).catch(e=>{});
+    fbAuth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(e=>{});
     fbAuth.onAuthStateChanged(user=>{
       currentUser = user;
       if(user) startCloudSync(user.uid); else stopCloudSync();
       renderCloudStrip();
       render();
     });
+    setTimeout(()=>{
+      if(!currentUser && fbAuth){
+        try{
+          const saved = localStorage.getItem(NS+'saved_auth');
+          if(saved){
+            const {email, password} = JSON.parse(saved);
+            if(email && password){
+              fbAuth.signInWithEmailAndPassword(email, password).catch(e=>{});
+            }
+          }
+        }catch(e){}
+      }
+    }, 1000);
   }catch(e){ console.error('Firebase init failed', e); }
 }
 
-function signInEmail(){
+function openCloudModal(){
   if(!isFirebaseConfigured()){ toast('⚠️ Firebase Config Key setup nahi hai'); return; }
   initFirebaseIfNeeded();
+  let modal = document.getElementById('cloudLoginModal');
+  if(!modal){
+    const container = document.createElement('div');
+    container.id = 'cloudLoginModalContainer';
+    container.innerHTML = `<div id="cloudLoginModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.65); z-index:9999; align-items:center; justify-content:center; padding:16px; backdrop-filter:blur(3px);">
+      <div style="background:var(--paper); width:100%; max-width:400px; border-radius:20px; padding:24px; box-shadow:0 12px 36px rgba(0,0,0,0.3); border:1.5px solid var(--line);">
+        <div class="h" style="font-size:1.2rem; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center;">
+          <span>🔐 Cloud Sync Sign-In</span>
+          <button id="closeCloudModalBtn" style="background:none; border:none; font-size:1.5rem; cursor:pointer; color:#888; padding:0 6px;">✕</button>
+        </div>
+        <div style="font-size:0.78rem; color:#666; margin-bottom:18px;">Ek baar login karein — har baar automatic logged-in rahega.</div>
+        
+        <label>Firebase Email</label>
+        <input type="email" id="cloudEmailIn" value="user@airman.com" placeholder="e.g. user@airman.com" style="width:100%; padding:12px; border-radius:10px; border:1.5px solid var(--line); margin-bottom:14px; font-size:0.95rem; font-family:'Manrope',sans-serif;" />
 
-  const email = prompt('Firebase Account Email:', 'user@airman.com');
-  if(!email) return;
-  const password = prompt('Firebase Password:');
-  if(!password) return;
+        <label>Firebase Password</label>
+        <div style="position:relative; margin-bottom:16px;">
+          <input type="password" id="cloudPassIn" placeholder="••••••••" style="width:100%; padding:12px 42px 12px 12px; border-radius:10px; border:1.5px solid var(--line); margin-bottom:0; font-size:0.95rem; font-family:'Manrope',sans-serif;" />
+          <button type="button" id="togglePassVis" style="position:absolute; right:10px; top:50%; transform:translateY(-50%); background:none; border:none; cursor:pointer; font-size:1.1rem; color:#666;" title="Toggle Password Visibility">👁️</button>
+        </div>
 
-  toast('⏳ Firebase Cloud Login...');
-  fbAuth.signInWithEmailAndPassword(email.trim(), password)
-    .then(res => {
-      toast(`✅ Signed in as ${res.user.email} — Cloud Sync Active ☁️`);
-    })
-    .catch(err => {
-      let errTxt = err.message;
-      if(err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential'){
-        errTxt = 'Galat Email ya Password!';
-      }
-      toast('❌ Sign-in Fail: ' + errTxt);
-    });
+        <label style="display:flex; align-items:center; gap:8px; cursor:pointer; text-transform:none; font-size:0.82rem; margin-bottom:18px; color:var(--teal); font-weight:700;">
+          <input type="checkbox" id="cloudRemember" checked style="width:18px; height:18px; margin:0; accent-color:var(--teal);" />
+          <span>Keep Me Logged In Forever (Auto-Sync)</span>
+        </label>
+
+        <button class="btn btn-teal" id="doCloudLoginBtn" style="margin-bottom:0; width:100%; padding:13px; font-size:0.95rem;">🔐 Sign In &amp; Start Cloud Sync</button>
+      </div>
+    </div>`;
+    document.body.appendChild(container);
+    modal = document.getElementById('cloudLoginModal');
+
+    document.getElementById('closeCloudModalBtn').onclick = closeCloudModal;
+    document.getElementById('togglePassVis').onclick = ()=>{
+      const pIn = document.getElementById('cloudPassIn');
+      if(pIn.type === 'password') pIn.type = 'text';
+      else pIn.type = 'password';
+    };
+    document.getElementById('doCloudLoginBtn').onclick = doCloudLoginSubmit;
+  }
+  modal.style.display = 'flex';
+}
+
+function closeCloudModal(){
+  const modal = document.getElementById('cloudLoginModal');
+  if(modal) modal.style.display = 'none';
+}
+
+function doCloudLoginSubmit(){
+  const email = document.getElementById('cloudEmailIn').value.trim();
+  const password = document.getElementById('cloudPassIn').value;
+  const remember = document.getElementById('cloudRemember').checked;
+
+  if(!email || !password){ toast('Email aur Password dono daalein'); return; }
+
+  const btn = document.getElementById('doCloudLoginBtn');
+  btn.disabled = true;
+  btn.textContent = '⏳ Verifying Login...';
+
+  fbAuth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).then(()=>{
+    return fbAuth.signInWithEmailAndPassword(email, password);
+  }).then(res => {
+    btn.disabled = false;
+    btn.textContent = '🔐 Sign In & Start Cloud Sync';
+    if(remember){
+      try{ localStorage.setItem(NS+'saved_auth', JSON.stringify({email, password})); }catch(e){}
+    }
+    closeCloudModal();
+    toast(`✅ Signed in as ${res.user.email} — Always Auto-Logged In ☁️`);
+  }).catch(err => {
+    btn.disabled = false;
+    btn.textContent = '🔐 Sign In & Start Cloud Sync';
+    let errTxt = err.message;
+    if(err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential'){
+      errTxt = 'Galat Email ya Password!';
+    }
+    toast('❌ Sign-in Fail: ' + errTxt);
+  });
+}
+
+function signInEmail(){
+  openCloudModal();
 }
 
 function signOutGoogle(){
+  try{ localStorage.removeItem(NS+'saved_auth'); }catch(e){}
   if(fbAuth) fbAuth.signOut();
   stopCloudSync();
   currentUser = null;
-  toast('Sign out ho gaya, Cloud Sync OFF');
+  toast('Sign Out ho gaya, Cloud Sync OFF');
   renderCloudStrip();
 }
 
