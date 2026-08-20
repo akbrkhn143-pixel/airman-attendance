@@ -200,8 +200,8 @@ const firebaseConfig = {
   projectId: "aakbartechlabs",
   storageBucket: "aakbartechlabs.firebasestorage.app",
   messagingSenderId: "519831615122",
-  appId: "1:519831615122:web:4635aa0c9699f41b2e984b",
-  measurementId: "G-YV38KXNX9X"
+  appId: "1:519831615122:web:b0e730c4f46058832e984b",
+  measurementId: "G-CYDR2TM0BW"
 };
 
 let fbApp = null, fbAuth = null, fbDb = null;
@@ -220,6 +220,9 @@ function initFirebaseIfNeeded(){
     fbApp = firebase.initializeApp(firebaseConfig);
     fbAuth = firebase.auth();
     fbDb = firebase.firestore();
+    fbAuth.getRedirectResult().then(res => {
+      if(res && res.user) toast(`✅ Signed in as ${res.user.email}`);
+    }).catch(e=>{});
     fbAuth.onAuthStateChanged(user=>{
       currentUser = user;
       if(user) startCloudSync(user.uid); else stopCloudSync();
@@ -235,7 +238,13 @@ function signInGoogle(){
   const provider = new firebase.auth.GoogleAuthProvider();
   fbAuth.signInWithPopup(provider)
     .then(res=>{ toast(`✅ Signed in as ${res.user.email}`); })
-    .catch(err=>{ if(err.code !== 'auth/popup-closed-by-user') toast('❌ Sign-in fail hua: ' + err.message); });
+    .catch(err=>{
+      if(err.code === 'auth/popup-blocked'){
+        fbAuth.signInWithRedirect(provider);
+      } else if(err.code !== 'auth/popup-closed-by-user'){
+        toast('❌ Sign-in fail hua: ' + err.message);
+      }
+    });
 }
 
 function signOutGoogle(){
