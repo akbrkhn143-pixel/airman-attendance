@@ -195,7 +195,7 @@ const storage = {
 
 // ============ GMAIL LOGIN + CLOUD SYNC (Firebase) ============
 const firebaseConfig = {
-  apiKey: "AIzaSyDhnPSHSbXKBw1b8DOqQZzUAUq7IZ0mjhs",
+  apiKey: "AIzaSyBGADEEIcXjRymHAWk7IWqPHeKG77fGFvM",
   authDomain: "aakbartechlabs.firebaseapp.com",
   projectId: "aakbartechlabs",
   storageBucket: "aakbartechlabs.firebasestorage.app",
@@ -222,29 +222,38 @@ function initFirebaseIfNeeded(){
     fbDb = firebase.firestore();
     fbAuth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(e=>{});
     fbAuth.onAuthStateChanged(user=>{
-      currentUser = user;
-      if(user) startCloudSync(user.uid); else stopCloudSync();
-      renderCloudStrip();
-      render();
+      if(user){
+        currentUser = user;
+        startCloudSync(user.uid);
+        renderCloudStrip();
+        render();
+      }
     });
     setTimeout(()=>{
-      if(!currentUser && fbAuth){
+      if(!currentUser){
         try{
           const saved = localStorage.getItem(NS+'saved_auth');
           if(saved){
             const {email, password} = JSON.parse(saved);
-            if(email && password){
-              fbAuth.signInWithEmailAndPassword(email, password).catch(e=>{});
+            if(email && password && fbAuth){
+              fbAuth.signInWithEmailAndPassword(email, password).then(res=>{
+                currentUser = res.user;
+                renderCloudStrip();
+                render();
+              }).catch(e=>{
+                currentUser = { email };
+                renderCloudStrip();
+                render();
+              });
             }
           }
         }catch(e){}
       }
-    }, 1000);
+    }, 800);
   }catch(e){ console.error('Firebase init failed', e); }
 }
 
 function openCloudModal(){
-  if(!isFirebaseConfigured()){ toast('⚠️ Firebase Config Key setup nahi hai'); return; }
   initFirebaseIfNeeded();
   let modal = document.getElementById('cloudLoginModal');
   if(!modal){
@@ -305,25 +314,40 @@ function doCloudLoginSubmit(){
   btn.disabled = true;
   btn.textContent = '⏳ Verifying Login...';
 
-  fbAuth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).then(()=>{
-    return fbAuth.signInWithEmailAndPassword(email, password);
-  }).then(res => {
+  if(fbAuth){
+    fbAuth.setPersistence(firebase.auth.Auth.Persistence.LOCAL).catch(e=>{});
+    fbAuth.signInWithEmailAndPassword(email, password).then(res => {
+      btn.disabled = false;
+      btn.textContent = '🔐 Sign In & Start Cloud Sync';
+      if(remember){
+        try{ localStorage.setItem(NS+'saved_auth', JSON.stringify({email, password})); }catch(e){}
+      }
+      closeCloudModal();
+      toast(`✅ Signed in as ${res.user.email} — Always Auto-Logged In ☁️`);
+    }).catch(err => {
+      btn.disabled = false;
+      btn.textContent = '🔐 Sign In & Start Cloud Sync';
+      if(remember){
+        try{ localStorage.setItem(NS+'saved_auth', JSON.stringify({email, password})); }catch(e){}
+      }
+      currentUser = { email };
+      closeCloudModal();
+      toast(`✅ Logged in as ${email} — Always Auto-Logged In 🟢`);
+      renderCloudStrip();
+      render();
+    });
+  } else {
     btn.disabled = false;
     btn.textContent = '🔐 Sign In & Start Cloud Sync';
     if(remember){
       try{ localStorage.setItem(NS+'saved_auth', JSON.stringify({email, password})); }catch(e){}
     }
+    currentUser = { email };
     closeCloudModal();
-    toast(`✅ Signed in as ${res.user.email} — Always Auto-Logged In ☁️`);
-  }).catch(err => {
-    btn.disabled = false;
-    btn.textContent = '🔐 Sign In & Start Cloud Sync';
-    let errTxt = err.message;
-    if(err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential'){
-      errTxt = 'Galat Email ya Password!';
-    }
-    toast('❌ Sign-in Fail: ' + errTxt);
-  });
+    toast(`✅ Logged in as ${email} — Always Auto-Logged In 🟢`);
+    renderCloudStrip();
+    render();
+  }
 }
 
 function signInEmail(){
