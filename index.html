@@ -241,7 +241,10 @@ function initFirebaseIfNeeded(){
                 renderCloudStrip();
                 render();
               }).catch(e=>{
-                currentUser = { email };
+                // Saved credentials no longer work — do NOT fake-login.
+                // Clear them so the user is prompted to sign in again with the real modal.
+                try{ localStorage.removeItem(NS+'saved_auth'); }catch(err){}
+                currentUser = null;
                 renderCloudStrip();
                 render();
               });
@@ -327,26 +330,23 @@ function doCloudLoginSubmit(){
     }).catch(err => {
       btn.disabled = false;
       btn.textContent = '🔐 Sign In & Start Cloud Sync';
-      if(remember){
-        try{ localStorage.setItem(NS+'saved_auth', JSON.stringify({email, password})); }catch(e){}
+      let msg = 'Login fail ho gaya — dobara try karein';
+      if(err && err.code){
+        if(err.code === 'auth/wrong-password' || err.code === 'auth/invalid-credential') msg = '❌ Galat Email ya Password';
+        else if(err.code === 'auth/user-not-found') msg = '❌ Ye Email registered nahi hai';
+        else if(err.code === 'auth/invalid-email') msg = '❌ Email format galat hai';
+        else if(err.code === 'auth/network-request-failed') msg = '❌ Network error — internet check karein';
+        else if(err.code === 'auth/too-many-requests') msg = '❌ Bahut zyada attempts — thodi der baad try karein';
+        else msg = `❌ Login fail: ${err.message || err.code}`;
       }
-      currentUser = { email };
-      closeCloudModal();
-      toast(`✅ Logged in as ${email} — Always Auto-Logged In 🟢`);
-      renderCloudStrip();
-      render();
+      toast(msg);
+      // Do NOT fake-login on failure — currentUser stays unset so cloud sync never silently breaks
     });
   } else {
     btn.disabled = false;
     btn.textContent = '🔐 Sign In & Start Cloud Sync';
-    if(remember){
-      try{ localStorage.setItem(NS+'saved_auth', JSON.stringify({email, password})); }catch(e){}
-    }
-    currentUser = { email };
-    closeCloudModal();
-    toast(`✅ Logged in as ${email} — Always Auto-Logged In 🟢`);
-    renderCloudStrip();
-    render();
+    toast('❌ Firebase abhi ready nahi hai — thodi der baad try karein ya page reload karein');
+    // Do NOT fake-login — cloud sync needs a real Firebase auth session (currentUser.uid)
   }
 }
 
