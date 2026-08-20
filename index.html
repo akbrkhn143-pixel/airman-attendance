@@ -232,18 +232,26 @@ function initFirebaseIfNeeded(){
   }catch(e){ console.error('Firebase init failed', e); }
 }
 
-function signInGoogle(){
-  if(!isFirebaseConfigured()){ toast('⚠️ Firebase abhi setup nahi hai — Admin se Firebase keys add karwayein'); return; }
+function signInEmail(){
+  if(!isFirebaseConfigured()){ toast('⚠️ Firebase Config Key setup nahi hai'); return; }
   initFirebaseIfNeeded();
-  const provider = new firebase.auth.GoogleAuthProvider();
-  fbAuth.signInWithPopup(provider)
-    .then(res=>{ toast(`✅ Signed in as ${res.user.email}`); })
-    .catch(err=>{
-      if(err.code === 'auth/popup-blocked'){
-        fbAuth.signInWithRedirect(provider);
-      } else if(err.code !== 'auth/popup-closed-by-user'){
-        toast('❌ Sign-in fail hua: ' + err.message);
+
+  const email = prompt('Firebase Account Email:', 'user@airman.com');
+  if(!email) return;
+  const password = prompt('Firebase Password:');
+  if(!password) return;
+
+  toast('⏳ Firebase Cloud Login...');
+  fbAuth.signInWithEmailAndPassword(email.trim(), password)
+    .then(res => {
+      toast(`✅ Signed in as ${res.user.email} — Cloud Sync Active ☁️`);
+    })
+    .catch(err => {
+      let errTxt = err.message;
+      if(err.code === 'auth/wrong-password' || err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential'){
+        errTxt = 'Galat Email ya Password!';
       }
+      toast('❌ Sign-in Fail: ' + errTxt);
     });
 }
 
@@ -306,10 +314,10 @@ function renderCloudStrip(){
     document.getElementById('cloudSignOutBtn').onclick = signOutGoogle;
   } else {
     el.innerHTML = `<div class="cloud-strip">
-      <span class="cs-txt">☁️ Cloud Sync Off — Sabka data ek jagah dekhne ke liye Gmail se sign in karein</span>
-      <button class="cs-btn" id="cloudSignInBtn">🔵 Sign in with Google</button>
+      <span class="cs-txt">☁️ Cloud Sync Off — Multi-device data sync ke liye Email/Password se login karein</span>
+      <button class="cs-btn" id="cloudSignInBtn" style="background:var(--terra);">🔐 Email Cloud Login</button>
     </div>`;
-    document.getElementById('cloudSignInBtn').onclick = signInGoogle;
+    document.getElementById('cloudSignInBtn').onclick = signInEmail;
   }
 }
 
@@ -1375,15 +1383,15 @@ function rBackup(app){
   const statusSub = linked ? 'Har change silently is JSON file mein save ho raha hai' : (pending ? 'Pehli tap/click karte hi automatically silently reconnect ho jayega' : 'Link karke silent automatic backup enable karein');
   const cloudOn = !!currentUser;
   app.innerHTML = `<div class="panel">
-    <div class="h">☁️ Gmail Cloud Sync</div>
+    <div class="h">☁️ Firebase Cloud Sync</div>
     <div class="role-banner" style="margin-bottom:14px;">
-      <div><div class="txt">${cloudOn?'🟢 Cloud Sync ON':'⚪ Cloud Sync OFF'}</div><div class="subtxt">${cloudOn?('Signed in as '+esc(currentUser.email)):'Isi Gmail se sab employees login karke same data dekhenge'}</div></div>
+      <div><div class="txt">${cloudOn?'🟢 Cloud Sync ON':'⚪ Cloud Sync OFF'}</div><div class="subtxt">${cloudOn?('Signed in as '+esc(currentUser.email)):'Firebase Email/Password se sab devices par same live data sync hoga'}</div></div>
       <span class="pill ${cloudOn?'present':'none'}">${cloudOn?'ON':'OFF'}</span>
     </div>
     ${cloudOn
       ? `<button class="btn btn-red" id="cloudSignOutBtn2">Sign Out</button>`
-      : `<button class="btn btn-teal" id="cloudSignInBtn2">🔵 Sign in with Google</button>`}
-    <div class="note" style="margin-bottom:14px;">${isFirebaseConfigured() ? 'Sign in karte hi is device ka data cloud mein save ho jayega — jo bhi employee isi Gmail se login karega, usko same live data dikhega.' : '⚠️ Cloud Sync abhi active nahi hai — Firebase project keys add hone ke baad ye kaam kareshortcut.'}</div>
+      : `<button class="btn btn-teal" id="cloudSignInBtn2">🔐 Sign in with Firebase Email</button>`}
+    <div class="note" style="margin-bottom:14px;">${isFirebaseConfigured() ? 'Firebase Email (e.g. user@airman.com) se login karte hi real-time cloud sync ON ho jayega.' : '⚠️ Firebase abhi setup nahi hai.'}</div>
   </div>
   <div class="panel">
     <div class="h">💾 Backup &amp; Auto-Link</div>
@@ -1406,7 +1414,7 @@ function rBackup(app){
   </div>`;
 
   const cloudSignInBtn2 = app.querySelector('#cloudSignInBtn2');
-  if(cloudSignInBtn2) cloudSignInBtn2.onclick = signInGoogle;
+  if(cloudSignInBtn2) cloudSignInBtn2.onclick = signInEmail;
   const cloudSignOutBtn2 = app.querySelector('#cloudSignOutBtn2');
   if(cloudSignOutBtn2) cloudSignOutBtn2.onclick = signOutGoogle;
 
